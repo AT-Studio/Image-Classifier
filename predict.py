@@ -6,9 +6,6 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 
-with open("cat_to_name.json", "r") as f:
-    cat_to_name = json.load(f)
-
 def main():
     parser = argparse.ArgumentParser()
 
@@ -21,6 +18,11 @@ def main():
         "checkpoint",
         type=str,
         help="path to saved checkpoint",
+    )
+    parser.add_argument(
+        "cate_to_name",
+        type=str,
+        help="categories mapping to name",
     )
     parser.add_argument(
         "--top_k",
@@ -36,35 +38,34 @@ def main():
 
     args = parser.parse_args()
 
-    device = "cuda" if args.gpu else "cpu"
+    device = "cuda" if args.gpu and torch.cuda.is_available() else "cpu"
 
     probs, classes = predict(args.image, args.checkpoint, args.top_k, device)
-    show_result(probs, classes, args.top_k)
+    show_result(probs, classes, args.top_k, args.cate_to_name, args.image)
 
 def load_checkpoint(filepath):
     checkpoint = torch.load(filepath)
-    return checkpoint
-
-def predict(image_path, model, topk, device):
-    checkpoint = load_checkpoint(model)
-
     network = FlowersNetwork(
-        checkpoint["input_size"],
-        checkpoint["output_size"],
+        (checkpoint["model_name"], checkpoint["input_size"]),
         checkpoint["hidden_layers"],
+        checkpoint["learning_rate"],
         checkpoint["epochs"],
-        checkpoint["optimizer_state_dict"],
+        checkpoint["class_to_idx"],
+        checkpoint["optimizer_state_dict"]
     )
     network.model.load_state_dict(checkpoint["model_state_dict"])
+    return network
 
-    class_to_idx = checkpoint["class_to_idx"]
-    idx_to_class = {v: k for k, v in class_to_idx.items()}
+def predict(image_path, checkpoint, topk, device):
+    network = load_checkpoint(checkpoint)
+
+    idx_to_class = {v: k for k, v in network.class_to_idx.items()}
 
     result = network.forward(
         torch.from_numpy(process_image(image_path)).float().unsqueeze(0),
         device
     )
-    results = torch.exp(result).topk(5)
+    results = torch.exp(result).topk(topk)
 
     probs = []
     classes = []
@@ -101,13 +102,15 @@ def imshow(image, ax=None, title=None):
 
     return ax
 
-def show_result(probs, classes, topk):
+def show_result(probs, classes, topk, cate_to_name_filepath, image):
+    cate_to_name = json.load(open(cate_to_name_filepath, "r"))
+
     for i in range(topk):
-        print(cat_to_name[classes[i]] + " - {:.1f}%".format(probs[i] * 100))
+        print(cate_to_name[classes[i]] + " - {:.1f}%".format(probs[i] * 100))
 
-    imshow(process_image("flowers/test/1/image_06743.jpg"))
+    imshow(process_image(image))
 
-    class_names = list(map(lambda x: cat_to_name[x], classes))
+    class_names = list(map(lambda x: cate_to_name[x], classes))
 
     plt.figure(figsize=(10, 5))
     plt.barh(list(reversed(class_names)), list(reversed(probs)))

@@ -15,14 +15,38 @@ def main():
     parser.add_argument(
         "--save_dir",
         type=str,
-        default=".",
+        default="",
         help="path to save checkpoint",
+    ),
+    parser.add_argument(
+        "--fc1_out",
+        type=int,
+        default=512,
+        help="output size hidden layer 1",
+    ),
+    parser.add_argument(
+        "--fc2_out",
+        type=int,
+        default=256,
+        help="output size hidden layer 2",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=0.001,
+        help="learning rate of network",
     )
     parser.add_argument(
         "--epochs",
         type=int,
         default=5,
         help="number of epochs",
+    )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="densenet",
+        help="model architecture",
     )
     parser.add_argument(
         "--gpu",
@@ -36,9 +60,8 @@ def main():
     train_dir = data_dir + "/train"
     valid_dir = data_dir + "/valid"
 
-    device = "cuda" if args.gpu else "cpu"
+    device = "cuda" if args.gpu and torch.cuda.is_available() else "cpu"
 
-    # TODO: Define your transforms for the training, validation, and testing sets
     train_transforms = transforms.Compose(
         [
             transforms.RandomRotation(30),
@@ -63,41 +86,53 @@ def main():
     train_loader = torch.utils.data.DataLoader(train_data, batch_size=24, shuffle=True)
     valid_loader = torch.utils.data.DataLoader(valid_data, batch_size=24)
 
-    network = FlowersNetwork(1024, 102, [512, 256], args.epochs)
+    arch = None
+    if args.arch == "densenet":
+        arch = (args.arch, 1024)
+    elif args.arch == "alexnet":
+        arch = (args.arch, 9216)
+    else:
+        print("Provided architecture not supported. Must be one of the following: densenet, alexnet.")
+        return
+
+    network = FlowersNetwork(arch, [args.fc1_out, args.fc2_out], args.lr, args.epochs, train_data.class_to_idx)
     network.train(train_loader, valid_loader, device)
 
-    save_checkpoint(network, train_data, args.save_dir)
+    save_checkpoint(network, args.save_dir)
 
-def save_checkpoint(network, train_data, path):
+def save_checkpoint(network, path):
     checkpoint = {
+        "model_name": network.model_name,
         "input_size": network.input_size,
-        "output_size": network.output_size,
         "hidden_layers": network.hidden_layers,
-        "model_state_dict": network.model.state_dict(),
-        "optimizer_state_dict": network.optimizer.state_dict(),
+        "learning_rate": network.learning_rate,
         "epochs": network.epochs,
-        "class_to_idx": train_data.class_to_idx,
+        "class_to_idx": network.class_to_idx,
+        "optimizer_state_dict": network.optimizer.state_dict(),
+        "model_state_dict": network.model.state_dict()
     }
     torch.save(checkpoint, path + "checkpoint.pth")
 
 class FlowersNetwork(nn.Module):
     def __init__(
-        self, input_size, output_size, hidden_layers, epochs, optimizer_state=None
+        self, arch, hidden_layers, learning_rate, epochs, class_to_idx, optimizer_state=None
     ):
         super().__init__()
-        self.input_size = input_size
-        self.output_size = output_size
+        self.model_name = arch[0]
+        self.input_size = arch[1]
+        self.output_size = len(class_to_idx)
         self.hidden_layers = hidden_layers
+        self.learning_rate = learning_rate
         self.epochs = epochs
 
-        self.fc1 = nn.Linear(input_size, hidden_layers[0])
+        self.fc1 = nn.Linear(self.input_size, hidden_layers[0])
         self.fc2 = nn.Linear(hidden_layers[0], hidden_layers[1])
-        self.fc3 = nn.Linear(hidden_layers[1], output_size)
+        self.fc3 = nn.Linear(hidden_layers[1], self.output_size)
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(0.2)
         self.softmax = nn.LogSoftmax(dim=1)
 
-        self.model = models.densenet121(weights=True)
+        self.model = self.getModel()
         for params in self.model.parameters():
             params.requires_grad = False
         self.model.classifier = nn.Sequential(
@@ -115,10 +150,20 @@ class FlowersNetwork(nn.Module):
             )
         )
 
+        self.class_to_idx = class_to_idx
+
         self.criterion = nn.NLLLoss()
-        self.optimizer = optim.Adam(self.model.classifier.parameters(), lr=0.001)
+        self.optimizer = optim.Adam(self.model.classifier.parameters(), lr=learning_rate)
         if optimizer_state is not None:
             self.optimizer.load_state_dict(optimizer_state)
+
+    def getModel(self):
+        model = None
+        if self.model_name == "densenet":
+            model = models.densenet121(weights=True)
+        else:
+            model = models.alexnet(weights = True)
+        return model
 
     def forward(self, images, device):
         # Would like to move to device but for GPU this seems to break and not sure why.
